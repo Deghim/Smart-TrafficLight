@@ -19,7 +19,7 @@ while ret:
         # Detect Vehicles
         detections = coco_model(frame)[0]
         # print(detections) # Este se utiliza para que el programa este corriendo correctamente 
-        for detection in detections.boxes.data.toList(): 
+        for detection in detections.boxes.data.tolist(): 
             print(detection)
 
         # Track Vehicles
