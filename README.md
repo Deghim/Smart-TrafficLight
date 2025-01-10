@@ -23,6 +23,7 @@ Deactivate the Virtual Environment: When you're done, deactivate the virtual env
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 (Se descarga ultralytics para usar YOLO)
     pip install ultralytics
-
+(Se descarga opencv para el uso de la camara)
+    pip install opencv-python
 
 
