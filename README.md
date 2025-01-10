@@ -1,2 +1,28 @@
 # Hackaton
 Código para la camara del semaforo del hackaton
+
+# Utilizar el codigo en un Entorno Virtual
+Se tiene que utilizar python 3.9 - 3.12 (Yo utilice 3.12)
+Create a Virtual Environment:
+        python3.12 -m venv venv
+    
+Activate the Virtual Environment:
+        source venv/bin/activate
+
+Install OpenCV in the Virtual Environment:
+        pip install opencv-python
+
+Run Your Script: While the virtual environment is active, run your script:
+        python camarav1.py
+
+Deactivate the Virtual Environment: When you're done, deactivate the virtual environment:
+        deactivate
+
+# Instalaciones
+(Se descarga PyTorch para poder utilizar ultranalytics, esto es de mac)
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+(Se descarga ultralytics para usar YOLO)
+    pip install ultralytics
+
+
+
