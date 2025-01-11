@@ -21,9 +21,17 @@ Deactivate the Virtual Environment: When you're done, deactivate the virtual env
 # Instalaciones
 (Se descarga PyTorch para poder utilizar ultranalytics, esto es de mac)
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
 (Se descarga ultralytics para usar YOLO)
     pip install ultralytics
+
 (Se descarga opencv para el uso de la camara)
     pip install opencv-python
 
+(Se usa para el modulo del archivo sort)
+    pip install scikit-image
+    pip install filterpy
+
+(Se usa para el archivo util)
+pip install easyocr
 
