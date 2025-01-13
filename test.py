@@ -3,9 +3,9 @@ from ultralytics import YOLO
 model = YOLO('yolov8n.pt')
 licenses = YOLO('license_plate_detector.pt')
 
-# results = model("testvideos/SoloCar.mp4",show=True,save=True)
+results = model("testvideos/CaravanCouple.mp4",show=True,save=False)
 
-juan = licenses("testvideos/SoloCar.mp4",show=True,save=True)
+# juan = licenses("testvideos/CaravanCouple.mp4",show=True,save=True)
 
 """
 Test file para probar que funcione correctamente el modelo
