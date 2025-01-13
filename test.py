@@ -1,4 +1,4 @@
-from ultralytics import YOLO
+from ultralytics import YOLO # type: ignore
 
 model = YOLO('yolov8n.pt')
 licenses = YOLO('license_plate_detector.pt')
