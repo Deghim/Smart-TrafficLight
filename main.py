@@ -1,76 +1,67 @@
 from ultralytics import YOLO # type: ignore
-import cv2 # libreria utilizada para uso de imagenes
+import cv2
 
-from sort.sort import *
 import numpy as np  
 from util import *
 
-# Load Models
+""" Load Models"""
 coco_model = YOLO('yolov8n.pt') # Modelo de YOLO ya entrenado usado para detectar carros
 license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo que detecta placas
 
-# Load Videos
+""" Load Videos """
 # cap = cv2.VideoCapture('testvideos/27260-362770008_tiny.mp4') # Se utiliza un video para testear el modelo
-cap = cv2.VideoCapture('testvideos/8132-207209040_tiny.mp4') # Se utiliza un video para testear el modelo
+stream = cv2.VideoCapture('testvideos/CaravanCouple.mp4') # Se utiliza un video para testear el modelo
 
-# Model Variables 
-vehicles = [2,3,5,6,7] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
-mot_tracker = Sort() # Objeto para trackear a los vehiculos
+# stream = cv2.VideoCapture(0)
+
+""" Model Variables """
+vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
+civilians = [1]
 results = {}
 
-# Read Frames
-ret = True # Detecta que se hayan leido los frames
-frame_number = -1
+def draw_detection_boxes(frame, detection, color = (255,255,255)):
+    for result in detection:
+        for box in result.boxes:
+            cls_id = int(box.cls[0].item()) # Get class ID and check if it's a vehicle
 
-while ret:
-    ret, frame = cap.read()
-    frame_number += 1
-    if ret and frame_number < 10: 
-        results[frame_number] = {}
-        # Detect Vehicles
-        detections = coco_model(frame)[0]
-        detections_ = [] # Almacenamiento del perimetro de las cajas de los vehiculos
-        # print(detections) # Este se utiliza para que el programa este corriendo correctamente 
-        for detection in detections.boxes.data.tolist(): 
-            # print(detection)
-            x1, y1, x2, y2, score, class_id = detection
-            if int(class_id) in vehicles:
-                detections_.append([x1, y1, x2, y2, score])
+            if cls_id in vehicles:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
+                confidence = float(box.conf[0].cpu().numpy())
+                
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)# Draw rectangle around vehicle
+                
+                label = f"{result.names[cls_id]}: {confidence:.2f}" # Add label with class name and confidence
+                
+                cv2.putText(frame, label, (x1, y1-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+    return frame
 
-        # Track Vehicles
-        """
-        Se utiliza para trackear los vehiculos
-        """
-        track_ids = mot_tracker.update(np.asarray(detections_))
+def video_stream():
+    if not stream.isOpened():
+        print("No stream :(")
+        exit()
 
-        # Detect License Plates  min 21:00 
-        license_plates = license_plate_detector(frame)[0]
-        for license_plate in license_plates.boxes.data.tolist(): 
-            x1, y1, x2, y2, score, class_id = license_plate
+    fps = stream.get(cv2.CAP_PROP_FPS)
+    width = int(stream.get(3))
+    height = int(stream.get(4))
 
-            # Assing License Plate to Car
-            xcar1,ycar1, xcar2, ycar2, car_id = get_car(license_plate, track_ids)
+    while True:
+        ret, frame = stream.read()
+        if not ret:
+            print("Stream Terminado")
+            break
 
-            # Crop License Plate 
-            license_plate_crop = frame[int(y1): int(y2), int(x1): int(x2) :]
+        frameDetected = coco_model(frame)
 
-            # Process License Plate
-            license_plate_crop_gray = cv2.cvtColor(license_plate_crop, cv2.COLOR_BGR2GRAY)
-            _, license_plate_crop_threshold = cv2.threshold(license_plate_crop_gray, 64, 255, cv2.THRESH_BINARY_INV)
+        frameWithBoxes = draw_detection_boxes(frame, frameDetected)
 
-            # cv2.imshow('Original_crop', license_plate_crop)
-            # cv2.imshow('Threshold', license_plate_crop_threshold)
+        cv2.imshow("Video Capture", frameWithBoxes)
+        if cv2.waitKey(1) == ord('q'):
+            break       
 
-            # cv2.waitKey(0)
+    stream.release()
+    cv2.destroyAllWindows() #!
 
-            # Read License Plate number
-            license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop_threshold)
-
-            if license_plate_text is not None:
-                results[frame_number][car_id] = {'car': {"bbox":[xcar1,ycar1, xcar2, ycar2]}
-                                                 , "license_plate":{"bbox":[x1, y1, x2, y2]
-                                                                    ,"text": license_plate_text
-                                                                    ,"bbox_score": score
-                                                                    ,"text_score": license_plate_text_score}}
-# Write Results
-write_csv(results,'./test.csv')
+if __name__ == "__main__":
+    video_stream()
