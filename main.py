@@ -11,12 +11,13 @@ license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo
 """ Load Videos """
 # cap = cv2.VideoCapture('testvideos/27260-362770008_tiny.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/PeopleWalking.mp4') # Se utiliza un video para testear el modelo
+# stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
 
 stream = cv2.VideoCapture(0)
 
 """ Model Variables """
 vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
-civilians = [0]
+civilians = [0,16,17]
 results = {}
 
 def draw_detection_boxes(frame, detection, color = (255,255,255)):
@@ -32,7 +33,7 @@ def draw_detection_boxes(frame, detection, color = (255,255,255)):
                 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)# Draw rectangle around vehicle
                 
-                label = f"id:{cls_id}, {result.names[cls_id]}: {confidence:.2f}" # Add label with class name and confidence
+                label = f"id: {cls_id}, {result.names[cls_id]}: {confidence:.2f}" # Add label with class name and confidence
                 cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
     
             if cls_id in civilians:
@@ -40,7 +41,7 @@ def draw_detection_boxes(frame, detection, color = (255,255,255)):
                 confidence = float(box.conf[0].cpu().numpy())
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0,0,255), 2)# Draw rectangle around vehicle
                 
-                label = f"id:{cls_id}, {result.names[cls_id]}: {confidence:.2f}" # Add label with class name and confidence
+                label = f"id: {cls_id}, {result.names[cls_id]}: {confidence:.2f}" # Add label with class name and confidence
                 cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     return frame
@@ -60,7 +61,7 @@ def video_stream():
             print("Stream Terminado")
             break
 
-        frameDetected = coco_model(frame)
+        frameDetected = coco_model(frame, verbose=False) # verbose, se utiliza para escribir la informacion del frame en terminal
 
         frameWithBoxes = draw_detection_boxes(frame, frameDetected)
 
