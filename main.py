@@ -17,7 +17,7 @@ stream = cv2.VideoCapture(0)
 
 """ Model Variables """
 vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
-civilians = [0,16,17]
+civilians = [0,16,17] # Id's de posibles peatones
 results = {}
 
 def draw_detection_boxes(frame, detection, color = (255,255,255)):

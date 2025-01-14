@@ -3,7 +3,7 @@
 # # Train the YOLO model
 # model = YOLO("yolov8n.yaml")  # Use YOLOv8 configuration
 # model.train(data="License Plate Recognition/data.yaml", epochs=50, imgsz=640)
-from ultralytics import YOLO
+from ultralytics import YOLO #type: ignore
 import os
 
 # Get absolute path to the data directory
