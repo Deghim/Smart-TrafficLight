@@ -1,8 +1,6 @@
 from ultralytics import YOLO # type: ignore
 import cv2
 
-import numpy as np  
-from collections import defaultdict
 from util import *
 
 """ Load Models"""
@@ -12,16 +10,15 @@ license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo
 """ Load Videos """
 # cap = cv2.VideoCapture('testvideos/27260-362770008_tiny.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/PeopleWalking.mp4') # Se utiliza un video para testear el modelo
-stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
-
+# stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
+# stream = cv2.VideoCapture('testvideos/trackVelocidad.mp4')
+stream = cv2.VideoCapture('testvideos/SoloCar.mp4')
 # stream = cv2.VideoCapture(0)
 
 """ Model Variables """
 vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
 civilians = [0,16,17] # Id's de posibles peatones
-# results = {}
-# track_history = defaultdict(lambda: []) # Este se usa para numeros
-track_history = defaultdict(list) # Este se usa para caracteres
+track_history = {}
 
 def draw_detection_boxes(frame, detection):
     for result in detection:
@@ -38,18 +35,20 @@ def draw_detection_boxes(frame, detection):
                 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2) # Draw rectangle around vehicle
                 
-                label = f"id: {cls_id}, {result.names[cls_id]}: {confidence:.2f} - ObjectID: {track_id}" # Add label with class name and confidence
+                label = f"Id: {track_id}, {result.names[cls_id]}: {confidence:.2f} " # Add label with class name and confidence
                 cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                 # print(f"{cls_id}: {result.names[cls_id]} - TrackID: {track_id}")
                 
                 
-                # if confidence > 0.5 : track_history[track_id].append((int((x1 + x2) / 2), int((y1 + y2) / 2))) # Store track history for plotting tracks
-                if confidence > 0.5 : track_history[track_id].append(label) #Se asegura que la confianza de deteccion sea segura para agregar la informacion
-
-                if len(track_history[track_id]) > 12:  # Retain last 12 frames of track
-                    track_history[track_id].pop(0)
-
+                if track_id not in track_history and confidence > 0.5: #Se asegura que la confianza de deteccion sea segura para agregar la informacion
+                    track_history[track_id] = {
+                        "classID": cls_id,
+                        "class": result.names[cls_id],
+                        "confidence":round(confidence, 2),
+                        "velocidadMax": None,
+                        "condicionesClimatologicas": None
+                    } 
     
             if cls_id in civilians:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
@@ -60,9 +59,11 @@ def draw_detection_boxes(frame, detection):
                 label = f"id: {cls_id}, {result.names[cls_id]}: {confidence:.2f} - ObjectID: {track_id}" # Add label with class name and confidence
                 cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-                if confidence > 0.5 : track_history[track_id].append(label) #Se asegura que la confianza de deteccion sea segura para agregar la informacion
-                if len(track_history[track_id]) > 12:  # Retain last 12 frames of track
-                    track_history[track_id].pop(0)
+                if track_id not in track_history and confidence > 0.5: #Se asegura que la confianza de deteccion sea segura para agregar la informacion
+                    track_history[track_id] = {
+                        "class": result.names[cls_id],
+                        "confidence":round(confidence, 2)
+                    } 
 
     return frame
 
