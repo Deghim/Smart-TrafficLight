@@ -35,3 +35,5 @@ Deactivate the Virtual Environment: When you're done, deactivate the virtual env
 (Se usa para el archivo util)
 pip install easyocr
 
+# Comentarios
+Darle prioridad a ambulancias patrullas o policias con sirenas activas
