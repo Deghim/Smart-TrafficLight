@@ -5,15 +5,15 @@ import numpy as np
 from util import *
 
 """ Load Models"""
-coco_model = YOLO('yolov8n.pt') # Modelo de YOLO ya entrenado usado para detectar carros
-license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo que detecta placas
+coco_model = YOLO('yolov8s.pt') # Modelo de YOLO ya entrenado usado para detectar carros
+# license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo que detecta placas
 
 """ Load Videos """
 # cap = cv2.VideoCapture('testvideos/27260-362770008_tiny.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/PeopleWalking.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
-# stream = cv2.VideoCapture('testvideos/trackVelocidad.mp4')
-stream = cv2.VideoCapture('testvideos/SoloCar.mp4')
+stream = cv2.VideoCapture('testvideos/trackVelocidad.mp4')
+# stream = cv2.VideoCapture('testvideos/carNight.mp4')
 # stream = cv2.VideoCapture(0)
 
 """ Model Variables """
@@ -21,6 +21,27 @@ vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecient
 civilians = [0,16,17] # Id's de posibles peatones
 track_history = {}
 pixel_to_meter_ratio = 0.05
+
+def calculate_exposure(frame):
+    """
+    Calculate the darkness level of the frame.
+
+    Args:
+        frame (numpy.ndarray): Input video frame.
+
+    Returns:
+        str: Exposure level ("low", "medium", "high").
+    """
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+    mean_intensity = gray_frame.mean()  # Calculate mean brightness
+
+    # Categorize exposure level
+    if mean_intensity < 50:
+        return {"low": mean_intensity}
+    elif 50 <= mean_intensity < 150:
+        return {"medium": mean_intensity}
+    else:
+        return {"high": mean_intensity}
 
 def calculate_speed(prev, curr, fps, ratio):
     """
@@ -34,6 +55,7 @@ def calculate_speed(prev, curr, fps, ratio):
     return distance * fps  # Speed in meters per second
 
 def draw_detection_boxes(frame, detection, fps):
+    exposure = calculate_exposure(frame)
     for result in detection:
         for box in result.boxes:
             cls_id = int(box.cls[0].item()) # Get class ID and check if it's a vehicle
@@ -58,25 +80,28 @@ def draw_detection_boxes(frame, detection, fps):
                 # print(f"{cls_id}: {result.names[cls_id]} - TrackID: {track_id}")
                 
                 # Update track history
-                if track_id not in track_history:
-                    track_history[track_id] = {
-                        "classID": cls_id,
-                        "class": result.names[cls_id],
-                        "confidence": round(confidence, 2),
-                        "velocidadMax": 0.0,
-                        "positions": [(x_center, y_center)],
-                    }
-                else:
-                    # Calculate speed
-                    positions = track_history[track_id]["positions"]
-                    positions.append((x_center, y_center))
-                    if len(positions) > 1:
-                        current_speed = calculate_speed(positions[-2], positions[-1], fps, pixel_to_meter_ratio)
-                        track_history[track_id]["velocidadMax"] = max(
-                            track_history[track_id]["velocidadMax"], current_speed
-                        )
-                    if len(positions) > 10:  # Limit position history to last 10 frames
-                        positions.pop(0)
+                if confidence > 0.5:
+                    if track_id not in track_history:
+                        track_history[track_id] = {
+                            "classID": cls_id,
+                            "class": result.names[cls_id],
+                            "confidence": round(confidence, 2),
+                            "velocidadMax": 0.0,
+                            "exposure": exposure,  # Store exposure value
+                            "positions": [(x_center, y_center)],
+                        }
+                    else:
+                        track_history[track_id]["exposure"] = exposure
+                        # Calculate speed
+                        positions = track_history[track_id]["positions"]
+                        positions.append((x_center, y_center))
+                        if len(positions) > 1:
+                            current_speed = calculate_speed(positions[-2], positions[-1], fps, pixel_to_meter_ratio)
+                            track_history[track_id]["velocidadMax"] = max(
+                                track_history[track_id]["velocidadMax"], current_speed
+                            )
+                        if len(positions) > 10:  # Limit position history to last 10 frames
+                            positions.pop(0)
     
             if cls_id in civilians:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
