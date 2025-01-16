@@ -1,6 +1,7 @@
 from ultralytics import YOLO # type: ignore
 import cv2
 
+import numpy as np
 from util import *
 
 """ Load Models"""
@@ -19,8 +20,20 @@ stream = cv2.VideoCapture('testvideos/SoloCar.mp4')
 vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
 civilians = [0,16,17] # Id's de posibles peatones
 track_history = {}
+pixel_to_meter_ratio = 0.05
 
-def draw_detection_boxes(frame, detection):
+def calculate_speed(prev, curr, fps, ratio):
+    """
+        Args:
+        prev (tuple): Previous (x, y) position.
+        curr (tuple): Current (x, y) position.
+        fps (float): Frames per second.
+        ratio (float): Meters per pixel ratio.
+    """
+    distance = np.sqrt((curr[0] - prev[0]) ** 2 + (curr[1] - prev[1]) ** 2) * ratio
+    return distance * fps  # Speed in meters per second
+
+def draw_detection_boxes(frame, detection, fps):
     for result in detection:
         for box in result.boxes:
             cls_id = int(box.cls[0].item()) # Get class ID and check if it's a vehicle
@@ -31,24 +44,39 @@ def draw_detection_boxes(frame, detection):
             if cls_id in vehicles:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
                 confidence = float(box.conf[0].cpu().numpy())
+                x_center = (x1 + x2) // 2
+                y_center = (y1 + y2) // 2
                 color = (255,255,255)
                 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2) # Draw rectangle around vehicle
                 
                 label = f"Id: {track_id}, {result.names[cls_id]}: {confidence:.2f} " # Add label with class name and confidence
+                if track_id in track_history and "velocidadMax" in track_history[track_id]:
+                    label += f", Max Speed: {track_history[track_id]['velocidadMax']:.2f} m/s"
                 cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                 # print(f"{cls_id}: {result.names[cls_id]} - TrackID: {track_id}")
                 
-                
-                if track_id not in track_history and confidence > 0.5: #Se asegura que la confianza de deteccion sea segura para agregar la informacion
+                # Update track history
+                if track_id not in track_history:
                     track_history[track_id] = {
                         "classID": cls_id,
                         "class": result.names[cls_id],
-                        "confidence":round(confidence, 2),
-                        "velocidadMax": None,
-                        "condicionesClimatologicas": None
-                    } 
+                        "confidence": round(confidence, 2),
+                        "velocidadMax": 0.0,
+                        "positions": [(x_center, y_center)],
+                    }
+                else:
+                    # Calculate speed
+                    positions = track_history[track_id]["positions"]
+                    positions.append((x_center, y_center))
+                    if len(positions) > 1:
+                        current_speed = calculate_speed(positions[-2], positions[-1], fps, pixel_to_meter_ratio)
+                        track_history[track_id]["velocidadMax"] = max(
+                            track_history[track_id]["velocidadMax"], current_speed
+                        )
+                    if len(positions) > 10:  # Limit position history to last 10 frames
+                        positions.pop(0)
     
             if cls_id in civilians:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
@@ -86,7 +114,7 @@ def video_stream():
 
         frameDetected = coco_model.track(frame, persist=True, tracker="botsort.yaml", conf=0.3, iou=0.5, verbose=False)
 
-        frameWithBoxes = draw_detection_boxes(frame, frameDetected)
+        frameWithBoxes = draw_detection_boxes(frame, frameDetected, fps)
 
         cv2.imshow("Video Capture", frameWithBoxes)
         if cv2.waitKey(1) == ord('q'):
