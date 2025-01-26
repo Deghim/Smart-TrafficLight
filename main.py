@@ -3,17 +3,19 @@ import cv2
 
 import numpy as np
 from util import *
+import time
+import os
 
 """ Load Models"""
 coco_model = YOLO('yolov8s.pt') # Modelo de YOLO ya entrenado usado para detectar carros
 # license_plate_detector  = YOLO('license_plate_detector.pt' ) # Se crea un modelo que detecta placas
 
 """ Load Videos """
-# cap = cv2.VideoCapture('testvideos/27260-362770008_tiny.mp4') # Se utiliza un video para testear el modelo
+# stream = cv2.VideoCapture('testvideos/testvideos/WhatsApp Image 2025-01-17 at 15.55.09.jpeg') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/PeopleWalking.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
 stream = cv2.VideoCapture('testvideos/trackVelocidad.mp4')
-# stream = cv2.VideoCapture('testvideos/carNight.mp4')
+# stream = cv2.VideoCapture('testvideos/CaravanCouple.mp4')
 # stream = cv2.VideoCapture(0)
 
 """ Model Variables """
@@ -21,6 +23,14 @@ vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecient
 civilians = [0,16,17] # Id's de posibles peatones
 track_history = {}
 pixel_to_meter_ratio = 0.05
+last_update_time = time.time()
+
+def send_to_database(data):
+    os.system('clear')
+    for track_id, info in data.items():
+        print(f"Track ID: {track_id}, Data: {info}")
+
+    print("Data sent successfully!\n")
 
 def calculate_exposure(frame):
     """
@@ -121,6 +131,7 @@ def draw_detection_boxes(frame, detection, fps):
     return frame
 
 def video_stream():
+    global last_update_time
     if not stream.isOpened():
         print("No stream :(")
         exit()
@@ -142,12 +153,16 @@ def video_stream():
         frameWithBoxes = draw_detection_boxes(frame, frameDetected, fps)
 
         cv2.imshow("Video Capture", frameWithBoxes)
+
+        if time.time() - last_update_time >= 5:
+            last_update_time = time.time()
+            send_to_database(track_history)
+
         if cv2.waitKey(1) == ord('q'):
             break       
 
-    print(track_history)
     stream.release()
     cv2.destroyAllWindows() #!
 
 if __name__ == "__main__":
-    video_stream()
+    video_stream()  
