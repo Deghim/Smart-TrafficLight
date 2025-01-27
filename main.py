@@ -6,7 +6,7 @@ import numpy as np
 from trafficlight import *
 import time
 import os
-import requests
+import requests # type: ignore
 
 """ MongoDB Configuration """
 MONGO_URI = "mongodb://jorgechavira4:jorgechavira4@localhost:27018/?tls=false&authSource=admin"
