@@ -1,11 +1,18 @@
 from ultralytics import YOLO # type: ignore
 import cv2
+from pymongo import MongoClient # type: ignore
 
 import numpy as np
-from util import *
+from trafficlight import *
 import time
 import os
 import requests
+
+""" MongoDB Configuration """
+MONGO_URI = "mongodb://jorgechavira4:jorgechavira4@localhost:27018/?tls=false&authSource=admin"
+DATABASE_NAME = "PacePoint"
+COLLECTION_NAME = "DatosCamaras"
+
 
 """ Load Models"""
 coco_model = YOLO('yolov8s.pt') # Modelo de YOLO ya entrenado usado para detectar carros
@@ -16,8 +23,8 @@ coco_model = YOLO('yolov8s.pt') # Modelo de YOLO ya entrenado usado para detecta
 # stream = cv2.VideoCapture('testvideos/PeopleWalking.mp4') # Se utiliza un video para testear el modelo
 # stream = cv2.VideoCapture('testvideos/Wondercamp.mp4')
 # stream = cv2.VideoCapture('testvideos/trackVelocidad.mp4')
-stream = cv2.VideoCapture('testvideos/CaravanCouple.mp4')
-# stream = cv2.VideoCapture(0)
+# stream = cv2.VideoCapture('testvideos/CaravanCouple.mp4')
+stream = cv2.VideoCapture(0)
 
 """ Model Variables """
 vehicles = [2,3,5,6,7,8] # Aqui se almacenan las id's de las clases pertenecientes de la clase vehiculos del dataset de coco
@@ -30,13 +37,49 @@ last_update_time = time.time()
 
 def send_to_database(data):
     os.system('clear')
-    
-    response = requests.post('http://localhost:3000/data', json=data)
 
-    # Print server response
-    print('Server response:', response.text)
+    # Conexion a servidor express
+    '''
+    try:
+        response = requests.post('http://localhost:3000/data', json=data)
+        print('Server response:', response.text)
+    except:
+        print('Server response: Failed ')
+    finally:
+        for track_id, info in data.items():
+            print(f"Track ID: {track_id}, Data: {info}")
+    '''
 
-    data.clear()
+    # Conexion a base de datos mongoDB
+    '''
+    try:
+        # Connect to MongoDB
+        client = MongoClient(MONGO_URI)
+        db = client[DATABASE_NAME]
+        collection = db[COLLECTION_NAME]
+
+        # Prepare data for insertion
+        documents = []
+        for track_id, info in data.items():
+            document = {"track_id": track_id, **info}
+            documents.append(document)
+
+        # Insert documents into MongoDB
+        if documents:
+            collection.insert_many(documents)
+            print(f"Inserted {len(documents)} documents into MongoDB. ")
+            data.clear()
+        else:
+            print("No new data to send to MongoDB.")
+            data.clear()
+
+    except Exception as e:
+        print(f"Error sending data to MongoDB: {e}")
+    finally:
+        client.close()  # Ensure the connection is closed
+    '''
+
+
 
 def calculate_exposure(frame):
     """
@@ -123,16 +166,41 @@ def draw_detection_boxes(frame, detection, fps):
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy()) # Extract coordinates and convert to integers
                 confidence = float(box.conf[0].cpu().numpy())
                 color = (0,255,0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2),color, 2)# Draw rectangle around vehicle
-                
-                label = f"id: {cls_id}, {result.names[cls_id]}: {confidence:.2f} - ObjectID: {track_id}" # Add label with class name and confidence
-                cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-                if track_id not in track_history and confidence > 0.5: #Se asegura que la confianza de deteccion sea segura para agregar la informacion
-                    track_history[track_id] = {
-                        "class": result.names[cls_id],
-                        "confidence":round(confidence, 2)
-                    } 
+                x_center = (x1 + x2) // 2
+                y_center = (y1 + y2) // 2
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2),color, 2)# Draw rectangle around person
+                
+
+                label = f"Id: {track_id}, {result.names[cls_id]}: {confidence:.2f} " # Add label with class name and confidence
+                if track_id in track_history and "velocidadMax" in track_history[track_id]:
+                    label += f", Max Speed: {track_history[track_id]['velocidadMax']:.2f} m/s"
+                cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # Update track history
+                if confidence > 0.5:
+                    if track_id not in track_history:
+                        track_history[track_id] = {
+                            "classID": cls_id,
+                            "class": result.names[cls_id],
+                            "confidence": round(confidence, 2),
+                            "velocidadMax": 0.0,
+                            "exposure": exposure,  # Store exposure value
+                            "positions": [(x_center, y_center)],
+                        }
+                    else:
+                        track_history[track_id]["exposure"] = exposure
+                        # Calculate speed
+                        positions = track_history[track_id]["positions"]
+                        positions.append((x_center, y_center))
+                        if len(positions) > 1:
+                            current_speed = calculate_speed(positions[-2], positions[-1], fps, pixel_to_meter_ratio)
+                            track_history[track_id]["velocidadMax"] = max(
+                                track_history[track_id]["velocidadMax"], current_speed
+                            )
+                        if len(positions) > 10:  # Limit position history to last 10 frames
+                            positions.pop(0) 
 
     return frame
 
