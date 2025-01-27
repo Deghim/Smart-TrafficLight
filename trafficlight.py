@@ -2,7 +2,7 @@ import cv2
 import time
 import numpy as np
 
-from ultralytics import YOLO
+from ultralytics import YOLO #type: ignore
 
 # -----------------------------
 # TRAFFIC LIGHT LOGIC CONSTANTS
