@@ -1,13 +1,8 @@
-/**
- * 
- * - TareaSemaforo: Controla la lógica de cola y LEDs según ultrasonidos.
- * - TareaBoton: Escucha el botón peatonal; si se presiona,
- *               suspende TareaSemaforo, hace animación y pone todo rojo,
- *               espera 15s y reanuda TareaSemaforo.
- * 
- * 
- * Para evitar bloqueos en TareaSemaforo, usamos vTaskDelay() en lugar de delay().
- */
+/**************************************************************
+   Lógica de Semáforo + FastTrack + RFID (ESP32-S3)
+   - RFID con pines SPI: SCK=12, MOSI=11, MISO=13, SS=10, RST=4
+   - Semáforo dirección 0: r=35, y=36, g=37, trig=5, echo=14
+ **************************************************************/
 
 #include <Arduino.h>
 #include <FreeRTOS.h>
@@ -15,99 +10,162 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
-// Definición de tamaño de pantalla OLED
+// ---------- [CONFIGURACIÓN RFID en ESP32-S3] ----------
+#define SCK_PIN 12
+#define MOSI_PIN 11
+#define MISO_PIN 13
+#define SS_PIN 10 // SDA del RC522
+#define RST_PIN 4 // RST del RC522
+
+SPIClass spiBus(HSPI);            // Bus SPI en ESP32-S3
+MFRC522 mfrc522(SS_PIN, RST_PIN); // Lector RFID
+
+// Para saber si hay tarjeta detectada (usado en Fast Track)
+bool tarjetaDetectada = false;
+
+// ---------- [CONFIGURACIÓN WiFi y Fast Track] ----------
+const char *ssid = "Totalplay-86A5";
+const char *password = "86A5ED567Wg8ReVT";
+const char *apiURL = "http://192.168.100.52:3000/modo_fast_track/67d0e7f92509f8bd4991a88c";
+
+// Modo FastTrack protegido con mutex
+bool modoFastTrack = false;
+SemaphoreHandle_t xMutex = NULL;
+
+// Controlar estado de la pantalla
+enum EstadoPantalla
+{
+  PIQUELE,
+  ANIMACION_MONITO,
+  ESPERE,
+  FAST_TRACK
+};
+
+EstadoPantalla estadoPantallaActual = PIQUELE;
+EstadoPantalla estadoPantallaAnterior = PIQUELE; // Para recordar el estado antes de Fast Track
+
+// ---------- [CONFIGURACIÓN OLED] ----------
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET -1  
+#define OLED_RESET -1
 
-// Creación del objeto de pantalla
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// Definición de pines I2C para OLED
+// Pines I2C OLED
 const int OLED_SDA = 20;
 const int OLED_SCL = 21;
-
-// Pantalla normal mostrada
-bool pantallaNormalMostrada = false;
-// CONFIGURACIÓN DE PINES
+// ---------- [CONFIGURACIÓN SEMÁFORO] ----------
 const int NUM_DIRECCIONES = 4;
+const int trigPins[NUM_DIRECCIONES] = {5, 47, 18, 16};
+const int echoPins[NUM_DIRECCIONES] = {14, 48, 8, 17};
+const int redLEDs[NUM_DIRECCIONES] = {1, 7, 35, 9};
+const int greenLEDs[NUM_DIRECCIONES] = {2, 6, 37, 3};
+const int amarilloLEDs[NUM_DIRECCIONES] = {42, 15, 36, 46};
 
-const int trigPins[NUM_DIRECCIONES]    = {13,  5, 18, 16};  // Pines TRIG de ultrasonidos
-const int echoPins[NUM_DIRECCIONES]    = {14,  4,  8, 17};  // Pines ECHO de ultrasonidos
-const int redLEDs[NUM_DIRECCIONES]     = { 1,  7, 10,  9};  // LEDs ROJOS
-const int greenLEDs[NUM_DIRECCIONES]   = {42,  6, 12,  3};  // LEDs VERDES
-const int amarilloLEDs[NUM_DIRECCIONES] = { 2, 15, 11, 46}; // LEDs AMARILLOS
+// Botón peatonal
+const int botonPeaton = 40;
 
-const int botonPeaton = 40; 
-// CONSTANTES DE TIEMPO
-const float  DIST_UMBRAL       = 12.0;             // Umbral de detección (cm)
-const TickType_t SEMAFORO_LOOP = 1000 / portTICK_PERIOD_MS; 
-  // Cada 1000 ms (1s) se vuelve a ejecutar la lógica
+// Constantes semáforo
+const float DIST_UMBRAL = 12.0;
+const TickType_t SEMAFORO_LOOP = 1000 / portTICK_PERIOD_MS;
+const unsigned long TIEMPO_VERDE_MAX = 2000;
+const unsigned long TIEMPO_AMARILLO_MAX = 100;
+const unsigned long TIEMPO_SIN_CARRO = 2200;
+const unsigned long TIEMPO_PEATON = 15000;
+const unsigned long TIEMPO_ESPERA_BOTON = 100000;
 
-const unsigned long TIEMPO_VERDE_MAX    = 2000;  // Máximo en verde (ms)
-const unsigned long TIEMPO_AMARILLO_MAX = 100;  
-const unsigned long TIEMPO_SIN_CARRO    = 2200;  // Considerar flujo detenido (ms)
-const unsigned long TIEMPO_PEATON       = 15000; // 15s peatonal
-const unsigned long TIEMPO_ESPERA_BOTON = 100000; // 100s espera entre usos del botón
-
-// MANEJO DE COLAS
+// Cola de direcciones
 int cola[NUM_DIRECCIONES];
 int tamanoCola = 0;
-
-// -1 significa "ninguna dirección en verde"
-int direccionActual = -1; 
-
-// Variables para control de tiempos (en milisegundos)
-unsigned long tiempoInicioVerde          = 0; 
+int direccionActual = -1;
+unsigned long tiempoInicioVerde = 0;
 unsigned long tiempoUltimoCarroDetectado = 0;
-// HANDLES DE TAREAS
-TaskHandle_t xHandleSemaforo = NULL;  // Tarea Semáforo
-TaskHandle_t xHandleBoton    = NULL;  // Tarea Botón
-// DECLARACIONES
+
+// ---------- [HANDLES DE TAREAS] ----------
+TaskHandle_t xHandleSemaforo = NULL;
+TaskHandle_t xHandleBoton = NULL;
+TaskHandle_t xHandleFastTrack = NULL;
+TaskHandle_t xHandleRFID = NULL;
+
+// ---------- [DECLARACIONES DE TAREAS] ----------
 void TareaSemaforo(void *pvParameters);
 void TareaBoton(void *pvParameters);
-// Funciones auxiliares
-float   leerDistancia(int dir);
-boolean estaEnCola(int dir);
-void    agregarACola(int dir);
-void    removerDeCola();
-void    iniciarLuzVerde(int dir);
-void    luzAmarilla(int dir);
-void    detenerLuzVerde(int dir);
-void    ponerTodoRojo();
-unsigned long getTimeMs(); // Helper para leer "tiempo actual" en ms usando FreeRTOS
+void TareaGetFastTrack(void *pvParameters);
+void TareaRFID(void *pvParameters);
 
-// Funciones para la pantalla OLED
+// Funciones auxiliares
+float leerDistancia(int dir);
+boolean estaEnCola(int dir);
+void agregarACola(int dir);
+void removerDeCola();
+void iniciarLuzVerde(int dir);
+void luzAmarilla(int dir);
+void detenerLuzVerde(int dir);
+void ponerTodoRojo();
+unsigned long getTimeMs();
+
+// Funciones OLED
 void mostrarPantallaNormal();
-void activarModoPeaton();
-void desactivarModoPeaton();
-void mostrarTiempoEspera(unsigned long tiempoRestante);
-void setup() {
+void mostrarFastTrack(bool estado);
+void mostrarAnimacionMonito();
+void mostrarEspere();
+void actualizarPantalla(EstadoPantalla estado);
+
+// ------------------ [SETUP] ------------------
+void setup()
+{
   Serial.begin(115200);
-  
-  // Configuración de pines I2C para OLED
-  Wire.begin(OLED_SDA, OLED_SCL);
-  
-  // Inicialización de la pantalla OLED
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Dirección 0x3C para pantallas de 128x64
-    Serial.println(F("Error al inicializar SSD1306"));
-    while(1); // No continuar si falla
+
+  // 1) Iniciar bus SPI (FSPI) con pines
+  spiBus.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+
+  // 2) Inicializar lector RFID
+  mfrc522.PCD_Init();
+  Serial.println("MFRC522 inicializado con FSPI.");
+
+  // 3) Conexión WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi...");
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20)
+  {
+    delay(500);
+    Serial.print(".");
+    intentos++;
   }
-  
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 10);
-  display.println("Semaforo Listo");
-  display.display();
-  delay(1000);
-  
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi conectado!");
+  }
+  else
+  {
+    Serial.println("\nFallo en conexión WiFi. Continuando sin conectividad.");
+  }
+
+  // 4) Mutex para proteger modoFastTrack
+  xMutex = xSemaphoreCreateMutex();
+
+  // 5) Inicializar OLED
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+  {
+    Serial.println(F("Error al inicializar SSD1306"));
+    while (1)
+      ;
+  }
+
   // Mostrar "PIQUELE" al inicio
-  mostrarPantallaNormal();
-  
-  // Configurar pines de LEDs y Ultrasonidos
-  for (int i = 0; i < NUM_DIRECCIONES; i++) {
+  actualizarPantalla(PIQUELE);
+
+  // 6) Configurar pines de LEDs y ultrasonidos
+  for (int i = 0; i < NUM_DIRECCIONES; i++)
+  {
     pinMode(trigPins[i], OUTPUT);
     pinMode(echoPins[i], INPUT);
 
@@ -115,91 +173,101 @@ void setup() {
     pinMode(greenLEDs[i], OUTPUT);
     pinMode(amarilloLEDs[i], OUTPUT);
 
-    // Iniciar todos en rojo
+    // Todos en rojo inicialmente
     digitalWrite(redLEDs[i], HIGH);
     digitalWrite(greenLEDs[i], LOW);
     digitalWrite(amarilloLEDs[i], LOW);
   }
 
-  // Inicializar cola de direcciones
-  for (int i = 0; i < NUM_DIRECCIONES; i++) {
+  // 7) Inicializar cola
+  for (int i = 0; i < NUM_DIRECCIONES; i++)
+  {
     cola[i] = -1;
   }
 
-  // Configurar botón peatonal
-  pinMode(botonPeaton, INPUT_PULLUP); 
-  // Nota: ajusta si usas pull-up/pull-down según tu hardware
+  // 8) Botón peatonal
+  pinMode(botonPeaton, INPUT_PULLUP);
 
-  // Crear la TareaSemaforo
-  xTaskCreate(
-    TareaSemaforo,         // Función que implementa la tarea
-    "TareaSemaforo",       // Nombre de la tarea (para depuración)
-    4096,                  // Tamaño de la pila (bytes)
-    NULL,                  // Parámetro (no usamos)
-    1,                     // Prioridad (1 = baja; mayor = más alta)
-    &xHandleSemaforo       // Guardamos el 'handle' en xHandleSemaforo
-  );
-
-  // Crear la TareaBoton
-  xTaskCreate(
-    TareaBoton,
-    "TareaBoton",
-    2048,
-    NULL,
-    1,
-    &xHandleBoton
-  );
+  // 9) Crear tareas
+  xTaskCreate(TareaSemaforo, "TareaSemaforo", 4096, NULL, 1, &xHandleSemaforo);
+  xTaskCreate(TareaBoton, "TareaBoton", 2048, NULL, 1, &xHandleBoton);
+  xTaskCreate(TareaGetFastTrack, "TareaGetFastTrack", 8192, NULL, 1, &xHandleFastTrack);
+  xTaskCreate(TareaRFID, "TareaRFID", 4096, NULL, 1, &xHandleRFID);
 }
-void loop() {
+
+void loop()
+{
+  // Vacío. Uso de tareas FreeRTOS
 }
-// TAREA SEMÁFORO
-void TareaSemaforo(void *pvParameters) {
-  // Esta tarea controla la lógica completa del semáforo.
-  // Se repite cada ~1 segundo (SEMAFORO_LOOP).
 
-  for (;;) {
-    unsigned long tiempoActual = getTimeMs(); // ms basado en ticks de FreeRTOS
+// ------------------ [TAREA SEMÁFORO] ------------------
+void TareaSemaforo(void *pvParameters)
+{
+  for (;;)
+  {
+    unsigned long tiempoActual = getTimeMs();
 
-    // 1) Leer sensores y actualizar cola
-    for (int i = 0; i < NUM_DIRECCIONES; i++) {
+    bool fastTrackActivo = false;
+    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+    {
+      fastTrackActivo = modoFastTrack;
+      xSemaphoreGive(xMutex);
+    }
+
+    // Leer sensores y actualizar cola
+    for (int i = 0; i < NUM_DIRECCIONES; i++)
+    {
       float distancia = leerDistancia(i);
-      if (distancia < DIST_UMBRAL && !estaEnCola(i)) {
+      if (distancia < DIST_UMBRAL && !estaEnCola(i))
+      {
         agregarACola(i);
       }
     }
 
-    // 2) Decidir estado
-    // Si no hay dirección actual y la cola no está vacía...
-    if (direccionActual == -1 && tamanoCola > 0) {
+    // Lógica principal
+    if (direccionActual == -1 && tamanoCola > 0)
+    {
       direccionActual = cola[0];
       iniciarLuzVerde(direccionActual);
-      tiempoInicioVerde          = tiempoActual;
+      tiempoInicioVerde = tiempoActual;
       tiempoUltimoCarroDetectado = tiempoActual;
     }
 
-    // - Si hay dirección actual en verde
-    if (direccionActual != -1) {
+    if (direccionActual != -1)
+    {
       unsigned long tiempoEnVerde = tiempoActual - tiempoInicioVerde;
       unsigned long tiempoSinCarro = tiempoActual - tiempoUltimoCarroDetectado;
       int n = 0;
-      for (int a = 0; a < tamanoCola; a++) {
-        if (cola[a] != -1) n++;
+      for (int a = 0; a < tamanoCola; a++)
+      {
+        if (cola[a] != -1)
+          n++;
       }
-      // Revisar si se sobrepasó TIEMPO_VERDE_MAX
-      if ((tiempoEnVerde >= TIEMPO_VERDE_MAX) && n > 1 ) {
+
+      unsigned long tiempoVerdeMaxActual = TIEMPO_VERDE_MAX;
+      if (fastTrackActivo)
+      {
+        // Modo fast track: reducir tiempo verde
+        tiempoVerdeMaxActual = TIEMPO_VERDE_MAX / 2;
+      }
+
+      if ((tiempoEnVerde >= tiempoVerdeMaxActual) && n > 1)
+      {
         detenerLuzVerde(direccionActual);
-        removerDeCola(); 
+        removerDeCola();
         direccionActual = -1;
       }
-      else {
-        // Comprobar si ya no hay vehículos en la dirección actual
-        float distanciaDirActual = leerDistancia(direccionActual);
-        if (distanciaDirActual < DIST_UMBRAL) {
+      else
+      {
+        float distActual = leerDistancia(direccionActual);
+        if (distActual < DIST_UMBRAL)
+        {
           tiempoUltimoCarroDetectado = tiempoActual;
-        } 
-        else {
-          // Si pasó TIEMPO_SIN_CARRO sin detección, acabamos verde
-          if (tiempoSinCarro >= TIEMPO_SIN_CARRO) {
+        }
+        else
+        {
+          if (tiempoSinCarro >= TIEMPO_SIN_CARRO)
+          {
             detenerLuzVerde(direccionActual);
             removerDeCola();
             direccionActual = -1;
@@ -208,143 +276,368 @@ void TareaSemaforo(void *pvParameters) {
       }
     }
 
-    // 3) Si la cola está vacía y no hay dirección actual => todo en rojo
-    if (tamanoCola == 0 && direccionActual == -1) {
+    if (tamanoCola == 0 && direccionActual == -1)
+    {
       ponerTodoRojo();
     }
 
-    // Esperamos un segundo antes de la siguiente iteración
     vTaskDelay(SEMAFORO_LOOP);
   }
 }
-// TAREA BOTÓN PEATONAL
-void TareaBoton(void *pvParameters) {
-  for (;;) {
-    if (digitalRead(botonPeaton) == LOW) {
-      vTaskDelay((TIEMPO_PEATON/3) / portTICK_PERIOD_MS);
+
+// ------------------ [TAREA BOTÓN PEATONAL] ------------------
+void TareaBoton(void *pvParameters)
+{
+  for (;;)
+  {
+    if (digitalRead(botonPeaton) == LOW)
+    {
+      vTaskDelay((TIEMPO_PEATON / 3) / portTICK_PERIOD_MS);
       Serial.println("PASO EL TIME, MODO PEATON INICIANDING");
-      
-      // Suspendemos la tarea del semáforo
+
+      // Cambiar pantalla a animación de monito al presionar el botón
+      actualizarPantalla(ANIMACION_MONITO);
+
+      // Suspender semáforo
       vTaskSuspend(xHandleSemaforo);
       Serial.println("SEMAFORO OFF");
 
-      // Animación de apagado si alguna dirección está en verde
-      for (int i = 0; i < NUM_DIRECCIONES; i++) {
-        if (digitalRead(greenLEDs[i]) == HIGH) {
+      // Animación de apagado si hay verde
+      for (int i = 0; i < NUM_DIRECCIONES; i++)
+      {
+        if (digitalRead(greenLEDs[i]) == HIGH)
+        {
           digitalWrite(greenLEDs[i], LOW);
           luzAmarilla(i);
         }
       }
-
-      // Poner todo en rojo
       ponerTodoRojo();
-
       Serial.println("Cruce peatonal 15s...");
-      
-      // Activar modo peatón con contador
-      activarModoPeaton();
 
-      // AQUÍ: Resetear las variables de estado del semáforo antes de reanudar
-      direccionActual = -1;  // No hay dirección actual
-      
-      // Resetear la cola y su tamaño
+      // Ahora el mostrarAnimacionMonito() equivale a la función anterior activarModoPeaton()
+      mostrarAnimacionMonito();
+
+      // Resetear semáforo
+      direccionActual = -1;
       tamanoCola = 0;
-      for (int i = 0; i < NUM_DIRECCIONES; i++) {
+      for (int i = 0; i < NUM_DIRECCIONES; i++)
+      {
         cola[i] = -1;
       }
-      
-      // Resetear los tiempos
       tiempoInicioVerde = 0;
       tiempoUltimoCarroDetectado = 0;
 
-      // Ahora reanudamos la tarea del semáforo
+      // Reanudar semáforo
       vTaskResume(xHandleSemaforo);
-      Serial.println("Fin de cruce peatonal. Reanudando semáforo con estado limpio.");
-      
-      // Mostrar mensaje de espera
-      mostrarEspera();
-      
+      Serial.println("Fin de cruce peatonal. Reanudando semáforo.");
+
+      // Cambiar pantalla a ESPERE
+      actualizarPantalla(ESPERE);
+
       vTaskDelay((TIEMPO_ESPERA_BOTON) / portTICK_PERIOD_MS);
       Serial.println("boton disponible");
-      
-      // Volver a mostrar "PIQUELE" cuando el botón está disponible nuevamente
-      mostrarPantallaNormal();
-    }
 
+      // Volver a PIQUELE después del tiempo de espera
+      actualizarPantalla(PIQUELE);
+    }
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
-// FUNCIONES OLED
-// Mostrar la pantalla normal del semáforo ("piquele")
-void mostrarPantallaNormal() {
+
+// ------------------ [TAREA GET FAST TRACK] ------------------
+void TareaGetFastTrack(void *pvParameters)
+{
+  vTaskDelay(5000 / portTICK_PERIOD_MS); // Espera WiFi
+
+  bool estadoAnterior = false;
+
+  for (;;)
+  {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      HTTPClient http;
+      http.begin(apiURL);
+
+      int httpCode = http.GET();
+      if (httpCode == 200)
+      {
+        String payload = http.getString();
+        StaticJsonDocument<200> doc;
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (!error)
+        {
+          bool nuevoEstado = doc["modo_fast_track"];
+
+          if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+          {
+            modoFastTrack = nuevoEstado;
+            xSemaphoreGive(xMutex);
+          }
+
+          if (nuevoEstado != estadoAnterior)
+          {
+            Serial.print("Cambio modo_fast_track a: ");
+            Serial.println(nuevoEstado ? "true" : "false");
+
+            // Guardar estado anterior de la pantalla antes de cambiar a Fast Track
+            if (nuevoEstado)
+            {
+              estadoPantallaAnterior = estadoPantallaActual;
+              actualizarPantalla(FAST_TRACK);
+            }
+
+            estadoAnterior = nuevoEstado;
+
+            if (nuevoEstado)
+            {
+              // FAST TRACK ON
+              // 1) Suspender semáforo y botón
+              vTaskSuspend(xHandleSemaforo);
+              vTaskSuspend(xHandleBoton);
+
+              // 2) Reanudar TareaRFID
+              vTaskResume(xHandleRFID);
+
+              // 3) Ya se mostró "FAST TRACK" con actualizarPantalla
+              // 4) Parpadeo rojo/verde en bucle hasta tarjeta
+              Serial.println("Iniciando parpadeo FAST TRACK, esperando tarjeta...");
+              while (true)
+              {
+                bool tarjetaLeida = false;
+                if (xSemaphoreTake(xMutex, 0) == pdTRUE)
+                {
+                  tarjetaLeida = tarjetaDetectada;
+                  xSemaphoreGive(xMutex);
+                }
+                if (tarjetaLeida)
+                {
+                  Serial.println("Tarjeta detectada, saliendo del parpadeo.");
+                  break;
+                }
+
+                // Parpadeo: rojo -> verde
+                for (int i = 0; i < NUM_DIRECCIONES; i++)
+                {
+                  digitalWrite(redLEDs[i], LOW);
+                  digitalWrite(greenLEDs[i], HIGH);
+                }
+                vTaskDelay(500 / portTICK_PERIOD_MS);
+
+                // Parpadeo: verde -> rojo
+                for (int i = 0; i < NUM_DIRECCIONES; i++)
+                {
+                  digitalWrite(greenLEDs[i], LOW);
+                  digitalWrite(redLEDs[i], HIGH);
+                }
+                vTaskDelay(500 / portTICK_PERIOD_MS);
+              }
+
+              // 5) Tarjeta detectada => dir[0] verde 20s
+              ponerTodoRojo();
+              digitalWrite(greenLEDs[0], HIGH);
+              Serial.println("Direccion[0] en verde por 20s...");
+              vTaskDelay(20000 / portTICK_PERIOD_MS);
+
+              // 6) Volver a la normalidad
+              tarjetaDetectada = false;
+              ponerTodoRojo();
+              vTaskResume(xHandleSemaforo);
+              vTaskResume(xHandleBoton);
+
+              // Desactivar fast track
+              if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+              {
+                modoFastTrack = false;
+                xSemaphoreGive(xMutex);
+              }
+              estadoAnterior = false;
+              Serial.println("Fin de Fast Track. Modo normal.");
+
+              // Volver al estado anterior de la pantalla
+              actualizarPantalla(estadoPantallaAnterior);
+            }
+            else
+            {
+              // FAST TRACK OFF
+              vTaskSuspend(xHandleRFID);
+              Serial.println("Tarea RFID suspendida");
+              vTaskResume(xHandleSemaforo);
+              vTaskResume(xHandleBoton);
+              Serial.println("Fast Track OFF -> Semáforo y Botón reanudados.");
+
+              // Volver al estado anterior de la pantalla
+              actualizarPantalla(estadoPantallaAnterior);
+            }
+          }
+        }
+        else
+        {
+          Serial.println("Error al deserializar JSON");
+        }
+      }
+      else
+      {
+        Serial.print("Error en solicitud GET: ");
+        Serial.println(httpCode);
+      }
+      http.end();
+    }
+    else
+    {
+      Serial.println("Desconectado del WiFi. Intentando reconectar...");
+      WiFi.reconnect();
+    }
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+  }
+}
+
+// ------------------ [TAREA RFID] ------------------
+void TareaRFID(void *pvParameters)
+{
+  // Suspendida al inicio, se activa con fast track
+  vTaskSuspend(NULL);
+
+  for (;;)
+  {
+    if (mfrc522.PICC_IsNewCardPresent())
+    {
+      if (mfrc522.PICC_ReadCardSerial())
+      {
+        Serial.println("Tarjeta RFID detectada!");
+
+        // UID (debug)
+        String content;
+        for (byte i = 0; i < mfrc522.uid.size; i++)
+        {
+          content += (mfrc522.uid.uidByte[i] < 0x10) ? " 0" : " ";
+          content += String(mfrc522.uid.uidByte[i], HEX);
+        }
+        content.toUpperCase();
+        Serial.println("ID de tarjeta: " + content);
+
+        // Indicar que se detectó tarjeta
+        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+        {
+          tarjetaDetectada = true;
+          xSemaphoreGive(xMutex);
+        }
+
+        // Esperar 1s para evitar lecturas repetidas
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+      }
+    }
+    else
+    {
+      // Si no hay tarjeta, ponemos false
+      if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+      {
+        tarjetaDetectada = false;
+        xSemaphoreGive(xMutex);
+      }
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+// ------------------ [FUNCIONES OLED] ------------------
+// Función central para actualizar la pantalla basada en estado
+void actualizarPantalla(EstadoPantalla estado)
+{
+  estadoPantallaActual = estado;
+
+  switch (estado)
+  {
+  case PIQUELE:
+    mostrarPantallaNormal();
+    break;
+  case ANIMACION_MONITO:
+    // La animación se maneja en mostrarAnimacionMonito()
+    break;
+  case ESPERE:
+    mostrarEspere();
+    break;
+  case FAST_TRACK:
+    mostrarFastTrack(true);
+    break;
+  }
+}
+
+void mostrarPantallaNormal()
+{
   display.clearDisplay();
   display.setTextSize(2.9);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(25, 30);
   display.println("PIQUELE");
   display.display();
-  pantallaNormalMostrada = true;
 }
-void activarModoPeaton() {
+
+void mostrarFastTrack(bool estado)
+{
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(5, 10);
+  display.println("FAST TRACK");
+
+  display.setTextSize(3);
+  display.setCursor(estado ? 40 : 20, 40);
+  display.println(estado ? "ON" : "OFF");
+  display.display();
+}
+
+// Función para mostrar la animación del monito (antes era activarModoPeaton)
+void mostrarAnimacionMonito()
+{
   int posX = 0;
-  
-  // Se mostrará un contador de tiempo restante con animación de mono
-  for (int segundos = TIEMPO_PEATON/1000; segundos > 0; segundos--) {
+  for (int segundos = TIEMPO_PEATON / 1000; segundos > 0; segundos--)
+  {
     display.clearDisplay();
-    
-    // Dibujar el contador de segundos
     display.setTextSize(3);
     display.setCursor(70, 10);
     display.print(segundos);
-    
+
     display.setTextSize(2);
     display.setCursor(60, 45);
     display.println("segs");
-    
-    // Dibujar un mono sencillo con primitivas gráficas
-    // Cabeza - agregamos el parámetro de color SSD1306_WHITE
+
+    // Monito animado
     display.fillCircle(posX + 10, 25, 5, SSD1306_WHITE);
-    
-    // Cuerpo
     display.drawLine(posX + 10, 30, posX + 10, 40, SSD1306_WHITE);
-    
-    // Brazos - alternar posición para dar impresión de movimiento
-    if (segundos % 2 == 0) {
-      // Brazo izquierdo arriba, derecho abajo
+
+    if (segundos % 2 == 0)
+    {
       display.drawLine(posX + 10, 33, posX + 5, 28, SSD1306_WHITE);
       display.drawLine(posX + 10, 33, posX + 15, 38, SSD1306_WHITE);
-    } else {
-      // Brazo izquierdo abajo, derecho arriba
+    }
+    else
+    {
       display.drawLine(posX + 10, 33, posX + 5, 38, SSD1306_WHITE);
       display.drawLine(posX + 10, 33, posX + 15, 28, SSD1306_WHITE);
     }
-    
-    // Piernas - alternar posición para simular pasos
-    if (segundos % 2 == 0) {
-      // Pierna izquierda adelante, derecha atrás
+
+    if (segundos % 2 == 0)
+    {
       display.drawLine(posX + 10, 40, posX + 5, 48, SSD1306_WHITE);
       display.drawLine(posX + 10, 40, posX + 15, 48, SSD1306_WHITE);
-    } else {
-      // Pierna izquierda atrás, derecha adelante
+    }
+    else
+    {
       display.drawLine(posX + 10, 40, posX + 5, 45, SSD1306_WHITE);
       display.drawLine(posX + 10, 40, posX + 15, 45, SSD1306_WHITE);
     }
-    
+
     display.display();
-    
-    // Mover el mono para la siguiente iteración
     posX += 4;
-    
-    // Reiniciar posición cuando llega al borde
-    if (posX > 100) {
+    if (posX > 100)
       posX = 0;
-    }
-    
     delay(1000);
   }
 }
-// Mostrar mensaje de espera cuando el botón no está disponible
-void mostrarEspera() {
+
+void mostrarEspere()
+{
   display.clearDisplay();
   display.setTextSize(3);
   display.setTextColor(SSD1306_WHITE);
@@ -352,44 +645,50 @@ void mostrarEspera() {
   display.println("ESPERE");
   display.display();
 }
-// FUNCIONES AUXILIARES
-float leerDistancia(int dir) {
-  // Generar pulso trig
+
+// ------------------ [AUXILIARES SEMÁFORO] ------------------
+float leerDistancia(int dir)
+{
   digitalWrite(trigPins[dir], LOW);
   delayMicroseconds(2);
   digitalWrite(trigPins[dir], HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPins[dir], LOW);
 
-  // Leer respuesta (con timeout de 30ms)
   long duracion = pulseIn(echoPins[dir], HIGH, 30000);
-  if (duracion == 0) {
-    return 1000.0; // No se detectó pulso => distancia "infinita"
+  if (duracion == 0)
+  {
+    return 1000.0;
   }
-  // distancia en cm
   float distancia = (duracion * 0.034) / 2;
   return distancia;
 }
 
-boolean estaEnCola(int dir) {
-  for (int i = 0; i < tamanoCola; i++) {
-    if (cola[i] == dir) return true;
+boolean estaEnCola(int dir)
+{
+  for (int i = 0; i < tamanoCola; i++)
+  {
+    if (cola[i] == dir)
+      return true;
   }
   return false;
 }
 
-void agregarACola(int dir) {
-  // Agrega dirección al final de la cola si hay espacio
-  if (tamanoCola < NUM_DIRECCIONES) {
+void agregarACola(int dir)
+{
+  if (tamanoCola < NUM_DIRECCIONES)
+  {
     cola[tamanoCola] = dir;
     tamanoCola++;
   }
 }
 
-void removerDeCola() {
-  // Quita la 1ra dirección de la cola y desplaza todo
-  if (tamanoCola > 0) {
-    for (int i = 0; i < (tamanoCola - 1); i++) {
+void removerDeCola()
+{
+  if (tamanoCola > 0)
+  {
+    for (int i = 0; i < (tamanoCola - 1); i++)
+    {
       cola[i] = cola[i + 1];
     }
     cola[tamanoCola - 1] = -1;
@@ -397,14 +696,14 @@ void removerDeCola() {
   }
 }
 
-void iniciarLuzVerde(int dir) {
-  // Enciende verde en dir, apaga rojo
+void iniciarLuzVerde(int dir)
+{
   digitalWrite(redLEDs[dir], LOW);
   digitalWrite(greenLEDs[dir], HIGH);
-
-  // Asegura que las otras direcciones queden en rojo
-  for (int i = 0; i < NUM_DIRECCIONES; i++) {
-    if (i != dir) {
+  for (int i = 0; i < NUM_DIRECCIONES; i++)
+  {
+    if (i != dir)
+    {
       digitalWrite(redLEDs[i], HIGH);
       digitalWrite(greenLEDs[i], LOW);
       digitalWrite(amarilloLEDs[i], LOW);
@@ -412,35 +711,38 @@ void iniciarLuzVerde(int dir) {
   }
 }
 
-void luzAmarilla(int dir) {
-  // Pequeña animación en amarillo
-  for (int i = 0; i < 5; i++) {
+void luzAmarilla(int dir)
+{
+  for (int i = 0; i < 5; i++)
+  {
     digitalWrite(greenLEDs[dir], HIGH);
     vTaskDelay(TIEMPO_AMARILLO_MAX / portTICK_PERIOD_MS);
     digitalWrite(greenLEDs[dir], LOW);
     vTaskDelay((TIEMPO_AMARILLO_MAX / 2) / portTICK_PERIOD_MS);
   }
-  digitalWrite(amarilloLEDs[dir],  HIGH);
+  digitalWrite(amarilloLEDs[dir], HIGH);
   vTaskDelay((TIEMPO_AMARILLO_MAX / 2) / portTICK_PERIOD_MS);
-  digitalWrite(amarilloLEDs[dir],  LOW);
+  digitalWrite(amarilloLEDs[dir], LOW);
 }
 
-void detenerLuzVerde(int dir) {
-  // Apagar verde, animación amarillo, luego rojo
+void detenerLuzVerde(int dir)
+{
   digitalWrite(greenLEDs[dir], LOW);
   luzAmarilla(dir);
   digitalWrite(redLEDs[dir], HIGH);
 }
 
-void ponerTodoRojo() {
-  for (int i = 0; i < NUM_DIRECCIONES; i++) {
+void ponerTodoRojo()
+{
+  for (int i = 0; i < NUM_DIRECCIONES; i++)
+  {
     digitalWrite(redLEDs[i], HIGH);
     digitalWrite(greenLEDs[i], LOW);
     digitalWrite(amarilloLEDs[i], LOW);
   }
 }
 
-// Helper para obtener tiempo en ms usando FreeRTOS
-unsigned long getTimeMs() {
+unsigned long getTimeMs()
+{
   return (unsigned long)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
